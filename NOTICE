@@ -1,0 +1,14 @@
+ToMarkdown
+Copyright (c) 2026 yeahhe365
+
+This project includes third-party software:
+
+---------------------------------------------------------------------------
+Defuddle (lib/defuddle.full.js)
+https://github.com/kepano/defuddle
+
+MIT License
+Copyright (c) kepano and contributors
+
+See lib/DEFUDDLE_LICENSE for the full license text.
+---------------------------------------------------------------------------

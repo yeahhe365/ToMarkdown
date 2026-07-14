@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "ToMarkdown",
+  "version": "1.0.1",
+  "description": "One-click save the main content of any page as AI-friendly Markdown.",
+  "permissions": ["activeTab", "scripting", "downloads"],
+  "action": {
+    "default_title": "ToMarkdown — Save page as Markdown",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
