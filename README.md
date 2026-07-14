@@ -1,5 +1,9 @@
 # ToMarkdown
 
+<p align="center">
+  <img src="icons/logo_rounded.png" alt="ToMarkdown logo" width="128" height="128">
+</p>
+
 Chrome 扩展：点击工具栏图标，将当前网页**主正文**一键保存为 **AI 友好的 Markdown（`.md`）** 文件。
 
 ## 功能
@@ -78,6 +82,10 @@ ToMarkdown/
 │   ├── defuddle.full.js   # Defuddle browser full bundle
 │   └── DEFUDDLE_LICENSE   # MIT
 ├── icons/
+│   ├── icon16.png / icon32.png / icon48.png / icon128.png
+│   ├── icon_master.png      # 1024 主图标
+│   ├── logo_rounded.png     # 圆角营销版
+│   └── logo_transparent.png # 透明底
 └── README.md
 ```
 
