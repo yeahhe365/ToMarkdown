@@ -54,25 +54,281 @@
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
+  /** Prefer human-readable titles over duration-only / slug-like strings. */
+  function titleQuality(t) {
+    const s = (t || "").trim();
+    if (!s) return -1;
+    if (/^\d{1,2}:\d{2}(:\d{2})?$/.test(s)) return 0;
+    if (/^[\d\s.:]+$/.test(s)) return 0;
+    // Mostly slug-like: lowercase words from URL segments
+    if (/^[a-z0-9]+(?: [a-z0-9]+)+$/.test(s) && s === s.toLowerCase()) return 2;
+    let score = 3;
+    if (/[A-Z]/.test(s)) score += 2;
+    if (/[,!?'"&()|]| - /.test(s)) score += 1;
+    if (s.length >= 12) score += 1;
+    if (s.length < 4) score -= 2;
+    return score;
+  }
+
   function betterTitle(a, b) {
     const as = (a || "").trim();
     const bs = (b || "").trim();
     if (!as) return bs;
     if (!bs) return as;
-    // Prefer human titles over slug / duration-only
-    const aDur = /^\d{1,2}:\d{2}\b/.test(as);
-    const bDur = /^\d{1,2}:\d{2}\b/.test(bs);
-    if (aDur && !bDur) return bs;
-    if (bDur && !aDur) return as;
+    // Prefer full title when one is a truncated prefix of the other
+    const al = as.toLowerCase();
+    const bl = bs.toLowerCase();
+    if (as.length >= 10 && bl.startsWith(al.slice(0, Math.min(al.length, 24)))) {
+      return bs.length >= as.length ? bs : as;
+    }
+    if (bs.length >= 10 && al.startsWith(bl.slice(0, Math.min(bl.length, 24)))) {
+      return as.length >= bs.length ? as : bs;
+    }
+    const qa = titleQuality(as);
+    const qb = titleQuality(bs);
+    if (qa !== qb) {
+      // Near-tie: keep the longer human title (aria often truncates mid-phrase)
+      if (Math.abs(qa - qb) <= 1 && Math.abs(as.length - bs.length) >= 10) {
+        return as.length >= bs.length ? as : bs;
+      }
+      return qa > qb ? as : bs;
+    }
     return as.length >= bs.length ? as : bs;
   }
 
+  /**
+   * Generic slug → title. Merges a single letter after a number
+   * (e.g. "2-b-loves" → "2b loves") which is common in product codes.
+   */
   function slugToTitle(slug) {
     if (!slug) return "";
-    return decodeURIComponent(slug)
-      .replace(/[-_]+/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
+    let decoded = slug;
+    try {
+      decoded = decodeURIComponent(slug);
+    } catch {
+      /* keep raw */
+    }
+    const parts = decoded.split(/[-_]+/).filter(Boolean);
+    const merged = [];
+    for (const p of parts) {
+      if (
+        merged.length &&
+        p.length === 1 &&
+        /[a-z]/i.test(p) &&
+        /\d$/i.test(merged[merged.length - 1])
+      ) {
+        merged[merged.length - 1] += p;
+      } else {
+        merged.push(p);
+      }
+    }
+    return merged.join(" ").replace(/\s+/g, " ").trim();
+  }
+
+  /** Strip site boilerplate from accessibility labels (any storefront). */
+  function cleanLabelTitle(raw) {
+    let s = String(raw || "").replace(/\s+/g, " ").trim();
+    if (!s) return "";
+    // "Title by Creator on SiteName." / "Title on SiteName"
+    s = s.replace(/\s+by\s+.+?\s+on\s+[A-Za-z0-9][\w .'-]{1,40}\.?\s*$/i, "");
+    s = s.replace(/\s+on\s+[A-Za-z0-9][\w .'-]{1,40}\.?\s*$/i, "");
+    // Leading duration overlay text "12:34 Title"
+    s = s.replace(/^\d{1,2}:\d{2}(:\d{2})?\s+/, "");
+    // Trailing " - Site" / " | Site" when site matches document host brand-ish
+    s = s.replace(/\s+[|\-–—]\s*[A-Za-z0-9][\w .'-]{1,30}\s*$/, (m) => {
+      // only strip if short brand suffix (not part of the real title)
+      return m.length <= 24 ? "" : m;
+    });
+    return s.trim();
+  }
+
+  // Currency / price (multi-locale, storefront-agnostic)
+  const PRICE_RE =
+    /(?:USD|EUR|GBP|CAD|AUD|JPY|CNY|HKD|SGD|INR|€|£|¥|￥|\$|₹|₩|₽)\s?\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{1,2})?|\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{1,2})?\s?(?:USD|EUR|GBP|CAD|AUD|JPY|CNY)/i;
+  const PRICE_STRICT_RE =
+    /^(?:USD|EUR|GBP|CAD|AUD|€|£|¥|￥|\$|₹|₩|₽)\s?\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{1,2})?$/i;
+  const DURATION_RE = /\b(\d{1,2}:\d{2}(?::\d{2})?)\b/;
+  // View counts only:
+  //  - plain 2–7 digits (954, 12345) — NOT single digit
+  //  - compact with K/M only (1.2K, 12K, 3M) — NOT "2B"/"2b" character-name style
+  // Capture group 1 = full count token
+  const COUNT_TOKEN = "(\\d+(?:\\.\\d+)?[KkMm]|\\d{2,7})";
+  const VIEWS_LABELED_RE = new RegExp(
+    "\\b" + COUNT_TOKEN + "\\s*(?:views?|plays?|watches?|次播放|次观看|播放量?)\\b",
+    "i"
+  );
+  const VIEWS_PREFIX_RE = new RegExp(
+    "\\b(?:views?|plays?|watches?|播放量?)[:\\s]+" + COUNT_TOKEN + "\\b",
+    "i"
+  );
+  const PRICE_LOOKAHEAD = "(?=\\s*(?:\\$|USD|EUR|GBP|CAD|AUD|€|£|¥|￥|₹|₩|₽))";
+
+  function extractPriceFromText(text) {
+    if (!text) return "";
+    const t = String(text).replace(/\s+/g, " ").trim();
+    if (PRICE_STRICT_RE.test(t)) return t;
+    const m = t.match(PRICE_RE);
+    return m ? m[0].replace(/\s+/g, " ").trim() : "";
+  }
+
+  function extractDurationFromText(text) {
+    if (!text) return "";
+    const m = String(text).match(DURATION_RE);
+    return m ? m[1] : "";
+  }
+
+  function normalizeViewCount(raw) {
+    if (!raw) return "";
+    let s = String(raw).trim().replace(/,/g, "");
+    // Reject years
+    if (/^20[0-3]\d$/.test(s)) return "";
+    // Reject single digit
+    if (/^\d$/.test(s)) return "";
+    // Reject character-code style "2B"/"2b"/"3M" alone with 1 digit + letter
+    // Real compact counts need K/M and typically look like 1.2K or 12K+
+    if (/^\d[Bb]$/i.test(s)) return "";
+    // Bare "1K" is ok; "2B" already rejected. Reject any *B/b billion shorthand
+    // unless multi-digit or decimal (2.1B / 12B) — still rare; skip all *B for safety
+    if (/b$/i.test(s)) return "";
+    // Compact must be K or M only
+    if (/[a-z]$/i.test(s) && !/[KkMm]$/.test(s)) return "";
+    return s;
+  }
+
+  /** Prefer a more trustworthy view count when merging harvest passes. */
+  function viewScore(v) {
+    if (!v) return -1;
+    const s = String(v).trim();
+    if (!s) return -1;
+    if (/[Bb]$/.test(s) || /^\d[A-Za-z]$/.test(s)) return 0;
+    if (/^\d+(?:\.\d+)?[KkMm]$/.test(s)) return 6; // 1.2K, 3M
+    if (/^\d{3,7}$/.test(s)) return 5; // 726, 1234
+    if (/^\d{2}$/.test(s)) return 2; // 18 — weak (often age/day in title)
+    return 3;
+  }
+
+  function mergeViews(prev, next) {
+    const p = normalizeViewCount(prev);
+    const n = normalizeViewCount(next);
+    if (!n) return p || "";
+    if (!p) return n;
+    const sp = viewScore(p);
+    const sn = viewScore(n);
+    if (sn !== sp) return sn > sp ? n : p;
+    // tie: prefer larger magnitude for plain integers, else keep prev
+    if (/^\d+$/.test(p) && /^\d+$/.test(n)) {
+      return Number(n) >= Number(p) ? n : p;
+    }
+    return p;
+  }
+
+  function mergeField(prev, next) {
+    if (next && String(next).trim()) return String(next).trim();
+    return prev || "";
+  }
+
+  /**
+   * Strip title-like words so age numbers ("18 year") aren't taken as views.
+   * Optional title string from the card is removed when present.
+   */
+  function scrubTitleFromBlob(text, title) {
+    let t = String(text || "").replace(/\s+/g, " ").trim();
+    if (!t) return "";
+    if (title) {
+      const esc = String(title)
+        .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+        .replace(/\s+/g, "\\s+");
+      try {
+        t = t.replace(new RegExp(esc, "ig"), " ");
+      } catch {
+        /* ignore bad title */
+      }
+    }
+    // Drop common "N year old" / age phrases that leak into counts
+    t = t.replace(/\b\d{1,2}\s*years?\s*old\b/gi, " ");
+    t = t.replace(/\b\d{1,2}\s*yr\.?\s*old\b/gi, " ");
+    return t.replace(/\s+/g, " ").trim();
+  }
+
+  /**
+   * Generic engagement/view extraction for media & storefront cards.
+   * Only trusts structural anchors (label / duration neighbor / price neighbor),
+   * never bare numbers floating inside a free-form title.
+   */
+  function extractViewsFromText(text, opts) {
+    if (!text) return "";
+    const title = opts && opts.title ? opts.title : "";
+    const t = scrubTitleFromBlob(text, title);
+    if (!t) return "";
+
+    // 1) Explicit labels — highest confidence
+    let m = t.match(VIEWS_LABELED_RE);
+    if (m) return normalizeViewCount(m[1]);
+    m = t.match(VIEWS_PREFIX_RE);
+    if (m) return normalizeViewCount(m[1]);
+
+    // 2) Count glued to price: "954 $24.99" / "1.2K €9.99"
+    //    Must NOT take MM from a duration like "13:22 $6.99" → false "22"
+    m = t.match(
+      new RegExp(
+        "(?<![\\d:])\\b" + COUNT_TOKEN + "\\b\\s*" + PRICE_LOOKAHEAD,
+        "i"
+      )
+    );
+    if (m) return normalizeViewCount(m[1]);
+
+    // 3) Duration then count only if count is NOT followed by letters
+    //    (rejects "15:56 18 year…"; accepts "14:30 954" / "14:30 954 $x")
+    m = t.match(
+      new RegExp(
+        "\\b\\d{1,2}:\\d{2}(?::\\d{2})?\\s+" +
+          COUNT_TOKEN +
+          "(?!\\s*[A-Za-z\\u00C0-\\u024F\\u4e00-\\u9fff])"
+      )
+    );
+    if (m) return normalizeViewCount(m[1]);
+
+    // 4) Duration … (optional junk) … count glued to price
+    //    Same (?<![\\d:]) guard so we never latch onto duration seconds.
+    m = t.match(
+      new RegExp(
+        "\\b\\d{1,2}:\\d{2}(?::\\d{2})?\\b" +
+          "(?:(?!\\d{1,2}:\\d{2})[^$€£¥]){0,100}?" +
+          "(?<![\\d:])\\b" +
+          COUNT_TOKEN +
+          "\\b\\s*" +
+          PRICE_LOOKAHEAD,
+        "i"
+      )
+    );
+    if (m) return normalizeViewCount(m[1]);
+
+    return "";
+  }
+
+  /** Short leaf nodes that look like view/play badges (not prices). */
+  function extractViewsFromLeafNodes(scope) {
+    if (!scope || !scope.querySelectorAll) return "";
+    const leaves = scope.querySelectorAll(
+      "span, div, p, b, strong, em, i, small, time"
+    );
+    let best = "";
+    for (const el of leaves) {
+      if (el.children && el.children.length > 2) continue;
+      const t = (el.textContent || "").replace(/\s+/g, " ").trim();
+      if (!t || t.length > 12) continue;
+      if (PRICE_STRICT_RE.test(t) || PRICE_RE.test(t)) continue;
+      if (DURATION_RE.test(t)) continue;
+      // Pure badge only: 954 | 1.2K | 12k — not "2B"
+      if (/^\d{2,7}$/.test(t) || /^\d+(?:\.\d+)?[KkMm]$/.test(t)) {
+        const v = normalizeViewCount(t);
+        best = mergeViews(best, v);
+        continue;
+      }
+      const labeled = extractViewsFromText(t);
+      best = mergeViews(best, labeled);
+    }
+    return best;
   }
 
   // ─── Full-page HTML → Markdown (non-virtualized pages) ─────────────
@@ -395,121 +651,418 @@
     return bs;
   }
 
-  // ─── Scroll-accumulate (virtualized store grids) ───────────────────
+  // ─── Scroll-accumulate (virtualized product / media grids) ─────────
 
-  function isManyVidsStorePage() {
-    const host = location.hostname || "";
-    if (!/manyvids\.com$/i.test(host) && !/\.manyvids\.com$/i.test(host)) {
-      return false;
+  /**
+   * Product/media detail path patterns (storefront-agnostic).
+   * Prefer detail URLs with an id or slug segment — not category/index pages.
+   */
+  const PRODUCT_DETAIL_RES = [
+    /\/videos?\/(\d+)(?:\/([^/?#]*))?/i,
+    /\/video\/(\d+)(?:\/([^/?#]*))?/i,
+    /\/watch\/([^/?#]+)/i,
+    /\/products?\/([^/?#]+)/i,
+    /\/item\/([^/?#]+)/i,
+    /\/p\/([^/?#]+)/i,
+    /\/v\/(\d+)(?:\/([^/?#]*))?/i,
+    /\/listing\/([^/?#]+)/i,
+    /\/listings\/([^/?#]+)/i,
+  ];
+
+  /** Paths that look like indexes / profiles, not a single sellable item. */
+  function isIndexLikePath(path) {
+    const p = (path || "").replace(/\/+$/, "");
+    if (/\/(store|shop|category|categories|search|explore|browse|catalog|collection|collections)(\/|$)/i.test(p)) {
+      // Allow if there is also a detail segment later with an id: /shop/item/123
+      if (!/\/(item|product|products|video|videos|watch|listing|p|v)\/[^/]+/i.test(p)) {
+        return true;
+      }
     }
-    if (/\/Store\/Videos/i.test(location.pathname || "")) return true;
-    if (document.querySelector('[class*="videosGrid"]')) return true;
-    if (document.querySelector('[class*="VideoCard"]')) return true;
+    if (/\/profile\/\d+/i.test(p) && !/\/(video|videos|watch|product|item)\//i.test(p)) {
+      return true;
+    }
+    // Trailing list endpoints: .../Store/Videos, .../shop/all
+    if (/\/(videos|items|products|all|new|popular|featured)$/i.test(p)) {
+      // detail form is /video/123/slug — already handled by detail match first
+      if (!/\/(video|videos|watch|product|item|listing)\/[^/]+\/.+/.test(p) &&
+          !/\/(video|videos|product|item)\/\d+/.test(p)) {
+        return true;
+      }
+    }
     return false;
   }
 
-  /** Generic: many product-like video cards currently in DOM. */
+  function parseProductHref(href) {
+    if (!href || href.startsWith("javascript:") || href === "#" || href.startsWith("#")) {
+      return null;
+    }
+    let u;
+    try {
+      u = new URL(href, location.href);
+    } catch {
+      return null;
+    }
+    // Same-origin product cards only (avoids nav/social off-site links)
+    if (u.origin !== location.origin) return null;
+
+    const path = u.pathname || "";
+    if (isIndexLikePath(path)) return null;
+
+    let id = "";
+    let slug = "";
+    let matched = false;
+
+    for (const re of PRODUCT_DETAIL_RES) {
+      const m = path.match(re);
+      if (!m) continue;
+      matched = true;
+      // group1 is id or slug depending on pattern
+      if (m[1] && /^\d+$/.test(m[1])) {
+        id = m[1];
+        slug = m[2] || "";
+      } else if (m[1]) {
+        slug = m[1];
+        id = m[1];
+      }
+      break;
+    }
+
+    if (!matched) return null;
+    if (!id) return null;
+
+    // Prefer numeric id when path has one after the matched segment
+    const segs = path.split("/").filter(Boolean);
+    if (!/^\d+$/.test(id)) {
+      for (let i = segs.length - 1; i >= 0; i--) {
+        if (/^\d{3,}$/.test(segs[i])) {
+          id = segs[i];
+          break;
+        }
+      }
+    }
+    if (!slug) {
+      const last = segs[segs.length - 1] || "";
+      if (last && !/^\d+$/.test(last)) slug = last;
+    }
+
+    return {
+      id,
+      url: u.origin + u.pathname,
+      slug,
+      path,
+    };
+  }
+
+  function isProductAnchor(a) {
+    return !!parseProductHref(a.getAttribute("href") || "");
+  }
+
+  function allProductAnchors() {
+    return Array.from(document.querySelectorAll("a[href]")).filter(isProductAnchor);
+  }
+
+  function productLinksIn(root) {
+    if (!root || !root.querySelectorAll) return [];
+    return Array.from(root.querySelectorAll("a[href]")).filter(isProductAnchor);
+  }
+
+  /**
+   * Detect a virtualized / long product grid worth scrolling.
+   * Domain-agnostic: count of product-like links or dense card grids with prices.
+   */
   function shouldScrollAccumulate() {
-    if (isManyVidsStorePage()) return true;
-    const videoLinks = document.querySelectorAll('a[href*="/Video/"]');
-    if (videoLinks.length >= 8) return true;
+    const links = allProductAnchors();
+    if (links.length >= 8) return true;
+
+    // Distinct product ids even if few anchors currently (virtualized)
+    const ids = new Set(
+      links.map((a) => parseProductHref(a.getAttribute("href") || "")?.id).filter(Boolean)
+    );
+    if (ids.size >= 6) return true;
+
+    // Grid of cards with price-like text
+    const cards = document.querySelectorAll(
+      'article, li, [class*="card" i], [class*="Card"], [itemtype*="Product"]'
+    );
+    let priced = 0;
+    for (const c of cards) {
+      if (priced >= 8) break;
+      if (extractPriceFromText(c.textContent || "")) priced += 1;
+    }
+    if (priced >= 8) return true;
+
+    // Explicit list total in UI often implies a long catalog
+    if (readExpectedTotal() && links.length >= 4) return true;
+
     return false;
   }
 
   function readExpectedTotal() {
     const text = (document.body && document.body.innerText) || "";
-    let m = text.match(/\bAll\s*\((\d+)\)/i);
-    if (m) return Number(m[1]);
-    m = text.match(/\b(\d+)\s*NSFW\s*Vids/i);
-    if (m) return Number(m[1]);
-    m = text.match(/\b(\d+)\s*videos?\b/i);
-    if (m && Number(m[1]) >= 5 && Number(m[1]) <= 5000) return Number(m[1]);
+    const patterns = [
+      /\bAll\s*\((\d+)\)/i,
+      /\b(?:showing|results?|items?|products?|videos?|listings?)[:\s]*(\d+)\b/i,
+      /\b(\d+)\s+(?:results?|items?|products?|videos?|listings?)\b/i,
+      /\b(\d+)\s*(?:of|\/)\s*\d+\s*(?:results?|items?|products?|videos?)\b/i,
+      /\((\d+)\)\s*(?:videos?|items?|products?)\b/i,
+    ];
+    for (const re of patterns) {
+      const m = text.match(re);
+      if (!m) continue;
+      const n = Number(m[1]);
+      if (n >= 5 && n <= 10000) return n;
+    }
     return null;
   }
 
-  function cardRootFrom(el) {
-    return (
-      el.closest(
-        '[class*="VideoCard"], [class*="gridCard"], [class*="ListItem"], [class*="video-card"], article, li'
-      ) || el.parentElement
+  /**
+   * Expand from a product link to the smallest card that still includes
+   * price / CTA siblings (without climbing into the whole grid).
+   */
+  function findCardRoot(anchor) {
+    const semantic = anchor.closest(
+      'article, li, [itemtype*="Product"], [itemtype*="Video"], [data-product-id], [data-item-id], [data-testid*="card" i], [class*="card" i], [class*="Card"], [class*="tile" i], [class*="Tile"], [role="listitem"]'
     );
+    let best = semantic || anchor.parentElement || anchor;
+    let node = anchor.parentElement;
+    for (let i = 0; i < 10 && node && node !== document.body; i++) {
+      const links = productLinksIn(node);
+      // Unique product ids inside this node
+      const ids = new Set(
+        links
+          .map((a) => parseProductHref(a.getAttribute("href") || "")?.id)
+          .filter(Boolean)
+      );
+      if (ids.size === 1) {
+        best = node; // safe to expand — still one product
+      } else if (ids.size > 1) {
+        break; // reached grid
+      }
+      node = node.parentElement;
+    }
+    return best;
   }
 
-  function harvestVideoCards(byId) {
-    const anchors = document.querySelectorAll('a[href*="/Video/"]');
-    for (const a of anchors) {
-      const href = a.getAttribute("href") || "";
-      const m = href.match(/\/Video\/(\d+)(?:\/([^/?#]*))?/i);
-      if (!m) continue;
-      const id = m[1];
-      const url = absUrl(href.split("?")[0]);
-      const slug = m[2] || "";
-
-      let title = "";
-      const aria = (a.getAttribute("aria-label") || "").trim();
-      if (aria) {
-        title = aria
-          .replace(/\s+by\s+.+?\s+on\s+ManyVids\.?\s*$/i, "")
-          .replace(/\s+on\s+ManyVids\.?\s*$/i, "")
-          .trim();
-      }
-      const text = (a.innerText || "").trim().replace(/\s+/g, " ");
-      if (!title || /^\d{1,2}:\d{2}/.test(title)) {
-        if (text && !/^\d{1,2}:\d{2}/.test(text) && text.length > 3) {
-          title = text;
+  function collectAttrsPrice(el) {
+    if (!el || !el.getAttribute) return "";
+    const candidates = [
+      el.getAttribute("data-price"),
+      el.getAttribute("data-product-price"),
+      el.getAttribute("data-amount"),
+      el.getAttribute("data-sale-price"),
+      el.getAttribute("content"), // itemprop=price
+      el.getAttribute("value"),
+    ];
+    for (const c of candidates) {
+      if (!c) continue;
+      const p = extractPriceFromText(c) || (/^\d+(?:[.,]\d{1,2})?$/.test(c.trim()) ? c.trim() : "");
+      if (p) {
+        // bare numbers from content= often need currency from itemprop sibling — keep if $ already
+        if (PRICE_RE.test(p) || PRICE_STRICT_RE.test(p)) return p;
+        if (/^\d/.test(p) && el.getAttribute("itemprop") === "price") {
+          const cur =
+            el.getAttribute("contentCurrency") ||
+            el.getAttribute("currency") ||
+            (el.closest("[itemprop]") &&
+              el.parentElement &&
+              el.parentElement.querySelector('[itemprop="priceCurrency"]') &&
+              el.parentElement.querySelector('[itemprop="priceCurrency"]').getAttribute(
+                "content"
+              )) ||
+            "";
+          return cur ? `${cur} ${p}`.trim() : p;
         }
       }
+    }
+    return "";
+  }
 
-      let price = "";
-      let duration = "";
-      let views = "";
+  function harvestCardMeta(scope, titleHint) {
+    let price = "";
+    let duration = "";
+    let views = "";
+    const titleOpts = titleHint ? { title: titleHint } : undefined;
 
-      const root = cardRootFrom(a);
-      if (root) {
-        const scope = root;
-        // Prefer cart / price button aria
-        for (const btn of scope.querySelectorAll("button, [role='button'], a")) {
-          const lab = btn.getAttribute("aria-label") || "";
-          const pm = lab.match(/\$\d+(?:\.\d{1,2})?/);
-          if (pm) {
-            price = pm[0];
-            break;
-          }
-          const bt = (btn.textContent || "").trim();
-          if (/^\$\d+(?:\.\d{1,2})?$/.test(bt)) {
-            price = bt;
-            break;
-          }
+    if (!scope) return { price, duration, views };
+
+    // Structured attributes first
+    const pricedEls = scope.querySelectorAll(
+      '[itemprop="price"], [data-price], [data-product-price], [data-amount], [data-sale-price], meta[itemprop="price"]'
+    );
+    for (const el of pricedEls) {
+      price = collectAttrsPrice(el) || extractPriceFromText(el.textContent || "");
+      if (price) break;
+    }
+
+    // data-views / interactionCount style attrs (schema-ish)
+    const viewAttrEls = scope.querySelectorAll(
+      "[data-views], [data-view-count], [data-play-count], [data-plays], [itemprop='interactionCount'], [itemprop='userInteractionCount']"
+    );
+    for (const el of viewAttrEls) {
+      const raw =
+        el.getAttribute("data-views") ||
+        el.getAttribute("data-view-count") ||
+        el.getAttribute("data-play-count") ||
+        el.getAttribute("data-plays") ||
+        el.getAttribute("content") ||
+        (el.textContent || "").trim();
+      const cleaned = String(raw).replace(/[^\d.KkMm]/g, "");
+      const v =
+        normalizeViewCount(raw) ||
+        extractViewsFromText(String(raw), titleOpts) ||
+        normalizeViewCount(cleaned);
+      views = mergeViews(views, v);
+    }
+
+    // Buttons / CTAs / labeled controls (cart, buy, price chips)
+    if (!price) {
+      const controls = scope.querySelectorAll(
+        "button, [role='button'], a, span, div, p, strong, b"
+      );
+      for (const el of controls) {
+        const lab = el.getAttribute("aria-label") || el.getAttribute("title") || "";
+        let p = extractPriceFromText(lab);
+        if (!p) {
+          const t = (el.childNodes.length <= 3 ? el.textContent : "").trim();
+          // Prefer short nodes that are price-only or price-heavy
+          if (t.length > 0 && t.length <= 24) p = extractPriceFromText(t);
         }
-        const blob = (scope.innerText || "").replace(/\s+/g, " ");
-        if (!price) {
-          const pm = blob.match(/\$\d+(?:\.\d{1,2})?/);
-          if (pm) price = pm[0];
+        if (p) {
+          price = p;
+          break;
         }
-        const dm = blob.match(/\b(\d{1,2}:\d{2})\b/);
-        if (dm) duration = dm[1];
-        // views like 1.2K / 954 / 2.2K near the card
-        const vm = blob.match(
-          /\b(\d{1,2}:\d{2})\s+(\d+(?:\.\d+)?[KkMm]?)\b/
+      }
+    }
+
+    // role=presentation / overlay / meta packs often hold "duration title views price"
+    const packed = [];
+    try {
+      scope
+        .querySelectorAll(
+          '[role="presentation"], [class*="overlay" i], [class*="meta" i], [class*="stats" i], [class*="badge" i], [class*="info" i]'
+        )
+        .forEach((el) => {
+          const t = (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim();
+          if (t && t.length < 400) packed.push(t);
+        });
+    } catch {
+      /* ignore invalid selectors on old engines */
+    }
+
+    const blob = (scope.innerText || scope.textContent || "").replace(/\s+/g, " ");
+    if (!price) price = extractPriceFromText(blob);
+    duration = extractDurationFromText(blob);
+    views = mergeViews(views, extractViewsFromText(blob, titleOpts));
+
+    for (const p of packed) {
+      if (!price) price = extractPriceFromText(p) || price;
+      if (!duration) duration = extractDurationFromText(p) || duration;
+      views = mergeViews(views, extractViewsFromText(p, titleOpts));
+    }
+
+    // Leaf badges: standalone "954" / "1.2K" (never "2B")
+    views = mergeViews(views, extractViewsFromLeafNodes(scope));
+
+    // Aria-labels often hold "Add to cart for $X" without visible $ in text
+    if (!price) {
+      for (const el of scope.querySelectorAll("[aria-label]")) {
+        const p = extractPriceFromText(el.getAttribute("aria-label") || "");
+        if (p) {
+          price = p;
+          break;
+        }
+      }
+    }
+
+    // Duration / views on thumbnails (link text like "14:30 954") and aria
+    // Prefer short overlay texts; scrub title from long aria that includes product name
+    for (const el of scope.querySelectorAll("a, [aria-label], [title], img")) {
+      const lab =
+        el.getAttribute("aria-label") ||
+        el.getAttribute("title") ||
+        el.getAttribute("alt") ||
+        "";
+      const txt = (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim();
+      // Prefer short overlay strings ("14:30 954") over long title aria
+      const combined = [lab, txt]
+        .filter((s) => s && s.length < 80)
+        .join(" ")
+        .trim();
+      const longCombined = (lab + " " + txt).trim();
+      if (!duration) {
+        duration =
+          extractDurationFromText(combined) ||
+          extractDurationFromText(longCombined) ||
+          duration;
+      }
+      views = mergeViews(
+        views,
+        extractViewsFromText(combined || longCombined, titleOpts)
+      );
+    }
+
+    return { price, duration, views };
+  }
+
+  function titleFromAnchor(a, slug) {
+    let title = "";
+    const aria = cleanLabelTitle(a.getAttribute("aria-label") || "");
+    if (aria && titleQuality(aria) > 0) title = aria;
+
+    const titleAttr = cleanLabelTitle(a.getAttribute("title") || "");
+    title = betterTitle(title, titleAttr);
+
+    // Visible text of this and related title links in the card
+    const text = cleanLabelTitle((a.innerText || a.textContent || "").replace(/\s+/g, " "));
+    if (titleQuality(text) > 0) title = betterTitle(title, text);
+
+    // img alt on the same card often holds the real name
+    const root = findCardRoot(a);
+    if (root) {
+      for (const img of root.querySelectorAll("img[alt]")) {
+        const alt = cleanLabelTitle(img.getAttribute("alt") || "");
+        if (titleQuality(alt) >= 3) title = betterTitle(title, alt);
+      }
+      // Other product anchors in the same card may carry the full title
+      for (const other of productLinksIn(root)) {
+        const ot = cleanLabelTitle(
+          (other.innerText || other.textContent || "").replace(/\s+/g, " ")
         );
-        if (vm) views = vm[2];
-        else {
-          const vm2 = blob.match(/\b(\d+(?:\.\d+)?[KkMm])\b/);
-          if (vm2) views = vm2[1];
-        }
+        const oa = cleanLabelTitle(other.getAttribute("aria-label") || "");
+        title = betterTitle(title, betterTitle(ot, oa));
       }
+      // Headings inside card
+      for (const h of root.querySelectorAll("h1,h2,h3,h4,h5,h6,[class*='title' i]")) {
+        const ht = cleanLabelTitle((h.innerText || "").replace(/\s+/g, " "));
+        if (titleQuality(ht) >= 3) title = betterTitle(title, ht);
+      }
+    }
+
+    title = betterTitle(title, slugToTitle(slug));
+    return title;
+  }
+
+  function harvestProductCards(byId) {
+    const anchors = allProductAnchors();
+    for (const a of anchors) {
+      const parsed = parseProductHref(a.getAttribute("href") || "");
+      if (!parsed) continue;
+      const { id, url, slug } = parsed;
+
+      const title = titleFromAnchor(a, slug);
+      const root = findCardRoot(a);
+      // Pass title so view parser can scrub "18 year old" / "2B" name noise
+      const meta = harvestCardMeta(root, title);
 
       const prev = byId.get(id) || {};
       byId.set(id, {
         id,
         url: prev.url || url,
-        title: betterTitle(
-          prev.title,
-          betterTitle(title, slugToTitle(slug) || id)
-        ),
-        price: price || prev.price || "",
-        duration: duration || prev.duration || "",
-        views: views || prev.views || "",
+        title: betterTitle(prev.title, title),
+        price: mergeField(prev.price, meta.price),
+        duration: mergeField(prev.duration, meta.duration),
+        // Never let a weak parse (2B, 18) overwrite a solid count (726, 1.2K)
+        views: mergeViews(prev.views, meta.views),
       });
     }
   }
@@ -548,46 +1101,53 @@
   }
 
   function findScrollContainer() {
-    // Prefer an overflowing ancestor of the video grid if present
-    const grid =
-      document.querySelector('[class*="videosGrid"]') ||
-      document.querySelector('[class*="VideoCard"]') ||
-      document.querySelector('a[href*="/Video/"]');
-    let el = grid && grid.parentElement;
-    for (let i = 0; i < 10 && el; i++) {
-      const style = window.getComputedStyle(el);
-      const oy = style.overflowY;
-      if (
-        (oy === "auto" || oy === "scroll" || oy === "overlay") &&
-        el.scrollHeight > el.clientHeight + 40
-      ) {
-        return el;
+    const sample = allProductAnchors()[0];
+    let el = sample && sample.parentElement;
+    for (let i = 0; i < 12 && el; i++) {
+      try {
+        const style = window.getComputedStyle(el);
+        const oy = style.overflowY;
+        if (
+          (oy === "auto" || oy === "scroll" || oy === "overlay") &&
+          el.scrollHeight > el.clientHeight + 40
+        ) {
+          return el;
+        }
+      } catch {
+        /* ignore */
       }
       el = el.parentElement;
     }
     return null;
   }
 
-  async function scrollAccumulateVideos() {
+  function metaCoverage(byId) {
+    let withPrice = 0;
+    let withViews = 0;
+    let withDuration = 0;
+    for (const it of byId.values()) {
+      if (it.price) withPrice += 1;
+      if (it.views) withViews += 1;
+      if (it.duration) withDuration += 1;
+    }
+    return { withPrice, withViews, withDuration, total: byId.size };
+  }
+
+  async function scrollAccumulateProducts() {
     const byId = new Map();
     const startY = window.scrollY;
     const expected = readExpectedTotal();
     const nested = findScrollContainer();
 
     const scrollToY = async (y) => {
-      if (nested) {
-        nested.scrollTop = y;
-      } else {
-        window.scrollTo(0, y);
-      }
+      if (nested) nested.scrollTop = y;
+      else window.scrollTo(0, y);
       fireScrollSignals(400);
-      await sleep(280);
+      await sleep(300);
     };
 
     const maxScroll = () => {
-      if (nested) {
-        return Math.max(0, nested.scrollHeight - nested.clientHeight);
-      }
+      if (nested) return Math.max(0, nested.scrollHeight - nested.clientHeight);
       return Math.max(
         0,
         document.documentElement.scrollHeight - window.innerHeight
@@ -596,18 +1156,18 @@
 
     const currentY = () => (nested ? nested.scrollTop : window.scrollY);
 
-    // Start at top
+    const harvest = () => harvestProductCards(byId);
+
     await scrollToY(0);
-    await sleep(350);
-    harvestVideoCards(byId);
+    await sleep(400);
+    harvest();
 
     let stagnant = 0;
     let lastSize = byId.size;
     const maxSteps = 100;
 
     for (let step = 0; step < maxSteps; step++) {
-      // Bring last card into view — helps virtual lists recycle
-      const links = document.querySelectorAll('a[href*="/Video/"]');
+      const links = allProductAnchors();
       if (links.length) {
         try {
           links[links.length - 1].scrollIntoView({
@@ -626,18 +1186,13 @@
 
       const before = currentY();
       const stepPx = Math.max(480, Math.floor(window.innerHeight * 0.75));
-      if (nested) {
-        nested.scrollTop = before + stepPx;
-      } else {
-        window.scrollBy(0, stepPx);
-      }
+      if (nested) nested.scrollTop = before + stepPx;
+      else window.scrollBy(0, stepPx);
       fireScrollSignals(stepPx);
-      await sleep(420);
-      harvestVideoCards(byId);
-
-      // Mid-pass harvest after small settle
-      await sleep(120);
-      harvestVideoCards(byId);
+      await sleep(450);
+      harvest();
+      await sleep(150);
+      harvest();
 
       const size = byId.size;
       if (size === lastSize) stagnant += 1;
@@ -646,25 +1201,22 @@
         lastSize = size;
       }
 
-      // Hit expected total early
-      if (expected && size >= expected) break;
-
+      // Do NOT stop solely because count matches expected — still need
+      // enrichment passes so price/duration fill in across virtual windows.
       const y = currentY();
       const maxY = maxScroll();
       const atBottom = y >= maxY - 12;
 
-      // If scroll didn't move, force jump toward end
       if (Math.abs(y - before) < 2) {
         await scrollToY(Math.min(maxY, before + stepPx * 2));
-        harvestVideoCards(byId);
+        harvest();
       }
 
       if (atBottom && stagnant >= 3) {
-        // bounce: top → bottom once more to catch missed windows
         await scrollToY(0);
-        harvestVideoCards(byId);
+        harvest();
         await scrollToY(maxScroll());
-        harvestVideoCards(byId);
+        harvest();
         if (byId.size === lastSize) break;
         lastSize = byId.size;
         stagnant = 0;
@@ -673,16 +1225,31 @@
       if (stagnant >= 10) break;
     }
 
-    // Even-spaced sweep (catches windows scrollTo alone sometimes misses)
+    // Full sweep for virtual-window enrichment (prices often only on CTAs
+    // visible in certain scroll positions)
     const sweepMax = maxScroll();
-    const sweeps = 24;
+    const sweeps = 28;
     for (let i = 0; i <= sweeps; i++) {
       await scrollToY(Math.round((sweepMax * i) / sweeps));
-      harvestVideoCards(byId);
-      if (expected && byId.size >= expected) break;
+      harvest();
     }
 
-    // Restore user scroll position
+    // If meta fields are sparse, one more slower enrichment sweep
+    let cov = metaCoverage(byId);
+    const needsMeta =
+      cov.total >= 5 &&
+      (cov.withPrice < cov.total * 0.85 ||
+        cov.withViews < cov.total * 0.85 ||
+        cov.withDuration < cov.total * 0.85);
+    if (needsMeta) {
+      for (let i = 0; i <= 20; i++) {
+        await scrollToY(Math.round((sweepMax * i) / 20));
+        await sleep(220);
+        harvest();
+      }
+      cov = metaCoverage(byId);
+    }
+
     try {
       if (nested) nested.scrollTop = startY;
       else window.scrollTo(0, startY);
@@ -690,25 +1257,35 @@
       /* ignore */
     }
 
-    const items = [...byId.values()].sort(
-      (a, b) => Number(b.id) - Number(a.id)
-    );
+    const items = [...byId.values()].sort((a, b) => {
+      // Prefer numeric ids desc; else localeCompare
+      const na = Number(a.id);
+      const nb = Number(b.id);
+      if (Number.isFinite(na) && Number.isFinite(nb) && String(na) === a.id && String(nb) === b.id) {
+        return nb - na;
+      }
+      return String(b.id).localeCompare(String(a.id));
+    });
 
     return {
       items,
       expected,
       collected: items.length,
+      withPrice: items.filter((it) => it.price).length,
+      withViews: items.filter((it) => it.views).length,
+      withDuration: items.filter((it) => it.duration).length,
     };
   }
 
-  function formatCatalogMarkdown(catalog, meta) {
-    const { items, expected, collected } = catalog;
+  function formatCatalogMarkdown(catalog) {
+    const { items, expected, collected, withPrice, withViews, withDuration } =
+      catalog;
     const lines = [];
-    lines.push(`## Videos (${collected}${expected ? ` / ${expected}` : ""})`);
+    lines.push(`## Items (${collected}${expected ? ` / ${expected}` : ""})`);
     lines.push("");
     if (expected && collected < expected) {
       lines.push(
-        `_Collected ${collected} of ${expected} labeled items. Scroll the page fully once, then try again if some are still missing._`
+        `_Collected ${collected} of ${expected} labeled items. Some may still be virtualized off-screen — try again after the list finishes loading._`
       );
       lines.push("");
     } else if (expected && collected >= expected) {
@@ -718,9 +1295,31 @@
       lines.push(`_Scroll-accumulate collected ${collected} items._`);
       lines.push("");
     }
+    if (typeof withPrice === "number" && collected > 0 && withPrice < collected) {
+      lines.push(
+        `_Prices found for ${withPrice}/${collected} items (others had no detectable price in the DOM)._`
+      );
+      lines.push("");
+    }
+    if (typeof withViews === "number" && collected > 0 && withViews < collected) {
+      lines.push(
+        `_View/play counts found for ${withViews}/${collected} items._`
+      );
+      lines.push("");
+    }
+    if (
+      typeof withDuration === "number" &&
+      collected > 0 &&
+      withDuration < collected
+    ) {
+      lines.push(
+        `_Durations found for ${withDuration}/${collected} items._`
+      );
+      lines.push("");
+    }
 
     items.forEach((it, i) => {
-      const title = (it.title || `Video ${it.id}`).replace(/\s+/g, " ").trim();
+      const title = (it.title || `Item ${it.id}`).replace(/\s+/g, " ").trim();
       const bits = [];
       if (it.price) bits.push(it.price);
       if (it.duration) bits.push(it.duration);
@@ -728,11 +1327,6 @@
       const suffix = bits.length ? ` — ${bits.join(" · ")}` : "";
       lines.push(`${i + 1}. [${title}](${it.url})${suffix}`);
     });
-
-    if (meta && meta.extra) {
-      lines.push("");
-      lines.push(meta.extra);
-    }
 
     return lines.join("\n");
   }
@@ -750,11 +1344,11 @@
 
     if (shouldScrollAccumulate()) {
       try {
-        const catalog = await scrollAccumulateVideos();
+        const catalog = await scrollAccumulateProducts();
         if (catalog.items.length >= 3) {
           mode = "scroll-accumulate";
           catalogInfo = catalog;
-          body = formatCatalogMarkdown(catalog, {});
+          body = formatCatalogMarkdown(catalog);
         }
       } catch (scrollErr) {
         console.warn("[ToMarkdown] scroll-accumulate failed:", scrollErr);
