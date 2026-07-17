@@ -1,6 +1,7 @@
 /**
  * ToMarkdown — service worker
- * Click the toolbar icon → extract main content with Defuddle → download .md
+ * Click the toolbar icon → extract page as Markdown (scroll-accumulate on
+ * virtualized stores) → download .md
  */
 
 const BADGE = {
@@ -14,7 +15,8 @@ const BADGE = {
 const RESTRICTED_URL_RE =
   /^(chrome|chrome-extension|edge|about|devtools|view-source|chrome-search|chrome-untrusted|brave|opera|vivaldi):/i;
 
-const EXTRACT_TIMEOUT_MS = 45_000;
+// Scroll-accumulate on virtualized stores (ManyVids etc.) can take a while
+const EXTRACT_TIMEOUT_MS = 120_000;
 
 async function setBadge(tabId, kind, ms = 2000) {
   const conf = BADGE[kind] || BADGE.clear;

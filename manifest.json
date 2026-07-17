@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "ToMarkdown",
-  "version": "1.0.1",
-  "description": "One-click save the main content of any page as AI-friendly Markdown.",
+  "version": "1.0.3",
+  "description": "One-click save pages as AI-friendly Markdown. Scroll-accumulates virtualized store lists (e.g. ManyVids).",
   "permissions": ["activeTab", "scripting", "downloads"],
   "action": {
     "default_title": "ToMarkdown — Save page as Markdown",

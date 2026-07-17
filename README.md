@@ -4,14 +4,16 @@
   <img src="icons/logo_rounded.png" alt="ToMarkdown logo" width="128" height="128">
 </p>
 
-Chrome 扩展：点击工具栏图标，将当前网页**主正文**一键保存为 **AI 友好的 Markdown（`.md`）** 文件。
+Chrome 扩展：点击工具栏图标，将当前网页**整页可见内容**一键保存为 **AI 友好的 Markdown（`.md`）** 文件。
 
 ## 功能
 
 - **一键保存**：点击扩展图标即可下载
-- **智能正文**：使用 [Defuddle](https://github.com/kepano/defuddle)（Obsidian Web Clipper 同款引擎）去除导航、广告、页脚等噪音
-- **Markdown 输出**：保留标题、列表、代码块、链接等结构，便于粘贴给 LLM
+- **整页保留**：默认抓取整页 DOM（商品卡片、标题、价格、链接等），只去掉 `script` / `style` / `svg` 等无展示噪音
+- **滚动累计**（v1.0.3+）：对 ManyVids 等**虚拟列表**店铺页会自动滚动窗口、去重累计全部视频（标题 / 价格 / 链接），避免只抓到当前屏的 30 条
+- **Markdown 输出**：保留标题、列表、表格、代码块、链接等结构，便于粘贴给 LLM
 - **本地处理**：不上传页面内容，无远程服务依赖
+- **元数据**：仍用 [Defuddle](https://github.com/kepano/defuddle) 辅助提取标题/作者等
 
 ### 输出示例
 

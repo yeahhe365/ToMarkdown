@@ -14,7 +14,7 @@ One-click Chrome extension that saves the main content of the current web page a
 |-------|--------|
 | Product name | **ToMarkdown** |
 | Trigger | Toolbar icon click |
-| Scope | Smart main content (noise stripped) |
+| Scope | Full page (v1.0.2+); only strip script/style/svg etc. |
 | Format | Markdown (`.md`) |
 | Action | Download to default Downloads folder |
 | Engine | Defuddle full browser bundle (`markdown: true`) |
