@@ -70,33 +70,44 @@ function isRestrictedUrl(url) {
  */
 async function downloadMarkdown(filename, markdown) {
   const tryDownload = async (url, revoke) => {
+    let downloadId;
     try {
-      const downloadId = await chrome.downloads.download({
+      downloadId = await chrome.downloads.download({
         url,
         filename,
         saveAs: false,
         conflictAction: "uniquify",
       });
-      if (typeof revoke === "function") {
-        const onChanged = (delta) => {
-          if (delta.id !== downloadId) return;
-          if (
-            delta.state &&
-            (delta.state.current === "complete" ||
-              delta.state.current === "interrupted")
-          ) {
-            chrome.downloads.onChanged.removeListener(onChanged);
-            revoke();
-          }
-        };
-        chrome.downloads.onChanged.addListener(onChanged);
-        setTimeout(revoke, 60_000);
-      }
-      return downloadId;
     } catch (err) {
       if (typeof revoke === "function") revoke();
       throw err;
     }
+
+    if (typeof revoke === "function") {
+      let cleaned = false;
+      const doCleanup = () => {
+        if (cleaned) return;
+        cleaned = true;
+        chrome.downloads.onChanged.removeListener(onChanged);
+        revoke();
+      };
+
+      const onChanged = (delta) => {
+        if (delta.id !== downloadId) return;
+        if (delta.state && (delta.state.current === "complete" || delta.state.current === "interrupted")) {
+          doCleanup();
+        }
+      };
+
+      chrome.downloads.onChanged.addListener(onChanged);
+
+      // Safety timeout: clean up even if download never reaches terminal state
+      // In MV3 SWs the timer may be lost on termination, but onChanged will also
+      // be GC'd on context destruction, so the leak surface is bounded.
+      setTimeout(doCleanup, 60_000);
+    }
+
+    return downloadId;
   };
 
   try {
@@ -118,11 +129,13 @@ async function downloadMarkdown(filename, markdown) {
     );
   }
 
-  if (markdown.length > 1_500_000) {
+  // Check encoded length for the data URL, not the raw UTF-16 string length
+  const encoded = encodeURIComponent(markdown);
+  if (encoded.length > 1_800_000) {
     throw new Error("Page too large to download via data URL fallback");
   }
   const dataUrl =
-    "data:text/markdown;charset=utf-8," + encodeURIComponent(markdown);
+    "data:text/markdown;charset=utf-8," + encoded;
   return tryDownload(dataUrl, null);
 }
 
@@ -137,12 +150,33 @@ function withTimeout(promise, ms, label) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
+// Tabs where defuddle.full.js has already been injected (avoid re-parsing 749KB)
+const _defuddleInjected = new Set();
+
 async function extractFromTab(tabId) {
-  // Inject library + extractor in order; result comes from the last file.
+  const files = _defuddleInjected.has(tabId)
+    ? ["content/extract.js"]
+    : ["lib/defuddle.full.js", "content/extract.js"];
+
   const results = await chrome.scripting.executeScript({
     target: { tabId },
-    files: ["lib/defuddle.full.js", "content/extract.js"],
+    files,
   });
+
+  if (!_defuddleInjected.has(tabId)) {
+    _defuddleInjected.add(tabId);
+    // Clean up when tab is closed/replaced
+    try {
+      chrome.tabs.onRemoved.addListener(function onRemove(id) {
+        if (id === tabId) {
+          _defuddleInjected.delete(tabId);
+          chrome.tabs.onRemoved.removeListener(onRemove);
+        }
+      });
+    } catch {
+      /* tabs permission not available — set will persist until SW restart */
+    }
+  }
 
   const payload = results && results[0] && results[0].result;
   if (!payload) {
