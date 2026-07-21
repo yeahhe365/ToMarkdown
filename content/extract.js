@@ -50,7 +50,8 @@
       .trim();
   }
 
-  /** Escape Markdown metacharacters in inline text content. */
+  /** Escape Markdown metacharacters in inline text content.
+   *  Only escapes characters that have semantic meaning inline: \\ ` * _ [ ] ( ) */
   function escapeMarkdownText(text) {
     if (!text) return "";
     // Backslash must be escaped first to avoid double-escaping later chars
@@ -59,18 +60,10 @@
       .replace(/`/g, "\\`")
       .replace(/\*/g, "\\*")
       .replace(/_/g, "\\_")
-      .replace(/\{/g, "\\{")
-      .replace(/\}/g, "\\}")
       .replace(/\[/g, "\\[")
       .replace(/\]/g, "\\]")
       .replace(/\(/g, "\\(")
-      .replace(/\)/g, "\\)")
-      .replace(/</g, "\\<")
-      .replace(/>/g, "\\>")
-      .replace(/#/g, "\\#")
-      .replace(/\+/g, "\\+")
-      .replace(/!/g, "\\!")
-      .replace(/\|/g, "\\|");
+      .replace(/\)/g, "\\)");
   }
 
   /** Escape `)` and `\` in Markdown URL targets. */
@@ -559,7 +552,7 @@
       const inner = childrenToMarkdown(el, listDepth).replace(/\n+/g, " ").trim();
       if (!inner && !href) return "";
       if (!href || href.startsWith("javascript:")) return inner || "";
-      return `[${escapeMarkdownText(inner || href)}](${escapeMarkdownUrl(href)})`;
+      return `[${inner || escapeMarkdownText(href)}](${escapeMarkdownUrl(href)})`;
     }
 
     if (tag === "img") {

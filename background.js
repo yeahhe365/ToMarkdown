@@ -151,9 +151,13 @@ function withTimeout(promise, ms, label) {
 }
 
 // Tabs where defuddle.full.js has already been injected (avoid re-parsing 749KB)
+// Bounded: cleared if over 5000 entries to prevent unbounded growth in long-lived SW sessions.
 const _defuddleInjected = new Set();
 
 async function extractFromTab(tabId) {
+  // Guard against unbounded growth in long-running service worker sessions
+  if (_defuddleInjected.size > 5000) _defuddleInjected.clear();
+
   const files = _defuddleInjected.has(tabId)
     ? ["content/extract.js"]
     : ["lib/defuddle.full.js", "content/extract.js"];
