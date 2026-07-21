@@ -872,12 +872,14 @@
 
   function readExpectedTotal() {
     const text = (document.body && document.body.innerText) || "";
+    // Ordered from highest to lowest specificity — first match wins.
+    // Avoid capturing page-offset numbers (e.g. "Showing 1-20 of 500 results" → "1").
     const patterns = [
-      /\bAll\s*\((\d+)\)/i,
-      /\b(?:showing|results?|items?|products?|videos?|listings?)[:\s]*(\d+)\b/i,
-      /\b(\d+)\s+(?:results?|items?|products?|videos?|listings?)\b/i,
-      /\b(\d+)\s*(?:of|\/)\s*\d+\s*(?:results?|items?|products?|videos?)\b/i,
-      /\((\d+)\)\s*(?:videos?|items?|products?)\b/i,
+      /\bAll\s*\((\d+)\)/i,                                                      // "All (500)"
+      /(?:of|\/)\s*(\d+)\s*(?:results?|items?|products?|videos?|listings?)\b/i,  // "of 500 results"
+      /\b(\d{2,})\s+(?:results?|items?|products?|videos?|listings?)\b/i,         // "500 results" (≥2 digits)
+      /\((\d+)\)\s*(?:videos?|items?|products?)\b/i,                              // "(500) videos"
+      /\b(?:showing|results?|items?|products?|videos?|listings?)[:\s]*(\d+)\b/i,  // "Showing 500"
     ];
     for (const re of patterns) {
       const m = text.match(re);
@@ -936,8 +938,7 @@
           const cur =
             el.getAttribute("contentCurrency") ||
             el.getAttribute("currency") ||
-            (el.closest("[itemprop]") &&
-              el.parentElement &&
+            (el.parentElement && el.parentElement.closest("[itemprop]") &&
               el.parentElement.querySelector('[itemprop="priceCurrency"]') &&
               el.parentElement.querySelector('[itemprop="priceCurrency"]').getAttribute(
                 "content"
@@ -1241,16 +1242,18 @@
 
     for (let step = 0; step < maxSteps; step++) {
       const links = allProductAnchors();
+      // Scroll past the last visible anchor before stepping down — avoids
+      // oscillating between scrollIntoView center and scrollBy.
       if (links.length) {
         try {
           links[links.length - 1].scrollIntoView({
-            block: "center",
+            block: "start",
             inline: "nearest",
             behavior: "instant",
           });
         } catch {
           try {
-            links[links.length - 1].scrollIntoView(false);
+            links[links.length - 1].scrollIntoView(true);
           } catch {
             /* ignore */
           }
