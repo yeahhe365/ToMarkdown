@@ -184,12 +184,14 @@
   //  - compact with K/M only (1.2K, 12K, 3M) — NOT "2B"/"2b" character-name style
   // Capture group 1 = full count token
   const COUNT_TOKEN = "(\\d+(?:\\.\\d+)?[KkMm]|\\d{2,7})";
+  // Terminator that works for both ASCII and CJK text (\\b only matches ASCII word boundaries)
+  const WORD_END = "(?:$|[\\s,.;!?)}\\]>]|$)";
   const VIEWS_LABELED_RE = new RegExp(
-    "\\b" + COUNT_TOKEN + "\\s*(?:views?|plays?|watches?|次播放|次观看|播放量?)\\b",
+    "\\b" + COUNT_TOKEN + "\\s*(?:views?|plays?|watches?|次播放|次观看|播放量?)" + WORD_END,
     "i"
   );
   const VIEWS_PREFIX_RE = new RegExp(
-    "\\b(?:views?|plays?|watches?|播放量?)[:\\s]+" + COUNT_TOKEN + "\\b",
+    "\\b(?:views?|plays?|watches?|播放量?)[:\\s]+" + COUNT_TOKEN + WORD_END,
     "i"
   );
   const PRICE_LOOKAHEAD = "(?=\\s*(?:\\$|USD|EUR|GBP|CAD|AUD|€|£|¥|￥|₹|₩|₽))";
