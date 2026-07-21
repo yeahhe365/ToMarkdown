@@ -50,6 +50,37 @@
       .trim();
   }
 
+  /** Escape Markdown metacharacters in inline text content. */
+  function escapeMarkdownText(text) {
+    if (!text) return "";
+    // Backslash must be escaped first to avoid double-escaping later chars
+    return String(text)
+      .replace(/\\/g, "\\\\")
+      .replace(/`/g, "\\`")
+      .replace(/\*/g, "\\*")
+      .replace(/_/g, "\\_")
+      .replace(/\{/g, "\\{")
+      .replace(/\}/g, "\\}")
+      .replace(/\[/g, "\\[")
+      .replace(/\]/g, "\\]")
+      .replace(/\(/g, "\\(")
+      .replace(/\)/g, "\\)")
+      .replace(/</g, "\\<")
+      .replace(/>/g, "\\>")
+      .replace(/#/g, "\\#")
+      .replace(/\+/g, "\\+")
+      .replace(/!/g, "\\!")
+      .replace(/\|/g, "\\|");
+  }
+
+  /** Escape `)` and `\` in Markdown URL targets. */
+  function escapeMarkdownUrl(url) {
+    if (!url) return "";
+    return String(url)
+      .replace(/\\/g, "\\\\")
+      .replace(/\)/g, "\\)");
+  }
+
   function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
@@ -436,7 +467,8 @@
     if (!node) return "";
 
     if (node.nodeType === Node.TEXT_NODE) {
-      return (node.nodeValue || "").replace(/[ \t\f\v]+/g, " ");
+      const raw = (node.nodeValue || "").replace(/[ \t\f\v]+/g, " ");
+      return escapeMarkdownText(raw);
     }
     if (node.nodeType !== Node.ELEMENT_NODE) return "";
 
@@ -481,14 +513,18 @@
     }
 
     if (tag === "pre") {
-      const code = el.textContent || "";
+      const rawCode = el.textContent || "";
+      const code = rawCode.replace(/\n$/, "");
+      // Count longest run of backticks in the code, then use one more
+      const backtickRun = (code.match(/`+/g) || []).reduce((max, m) => Math.max(max, m.length), 0);
+      const fence = "`".repeat(Math.max(3, backtickRun + 1));
       const lang =
         (el.querySelector("code") &&
           (el.querySelector("code").getAttribute("class") || "").match(
             /language-([\w-]+)/
           )?.[1]) ||
         "";
-      return `\n\n\`\`\`${lang}\n${code.replace(/\n$/, "")}\n\`\`\`\n\n`;
+      return `\n\n${fence}${lang}\n${code}\n${fence}\n\n`;
     }
 
     if (tag === "code") {
@@ -504,7 +540,7 @@
       const inner = childrenToMarkdown(el, listDepth).replace(/\n+/g, " ").trim();
       if (!inner && !href) return "";
       if (!href || href.startsWith("javascript:")) return inner || "";
-      return `[${inner || href}](${href})`;
+      return `[${escapeMarkdownText(inner || href)}](${escapeMarkdownUrl(href)})`;
     }
 
     if (tag === "img") {
@@ -513,7 +549,7 @@
       );
       const alt = el.getAttribute("alt") || "";
       if (!src) return alt || "";
-      return `![${alt}](${src})`;
+      return `![${escapeMarkdownText(alt)}](${escapeMarkdownUrl(src)})`;
     }
 
     if (tag === "ul" || tag === "ol") {
@@ -1325,7 +1361,7 @@
       if (it.duration) bits.push(it.duration);
       if (it.views) bits.push(`${it.views} views`);
       const suffix = bits.length ? ` — ${bits.join(" · ")}` : "";
-      lines.push(`${i + 1}. [${title}](${it.url})${suffix}`);
+      lines.push(`${i + 1}. [${escapeMarkdownText(title)}](${escapeMarkdownUrl(it.url)})${suffix}`);
     });
 
     return lines.join("\n");
