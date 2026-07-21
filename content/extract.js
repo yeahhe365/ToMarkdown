@@ -253,9 +253,23 @@
     return p;
   }
 
+  /** Merge field value, preferring existing over lower-quality replacements. */
   function mergeField(prev, next) {
-    if (next && String(next).trim()) return String(next).trim();
-    return prev || "";
+    const p = (prev && String(prev).trim()) || "";
+    const n = (next && String(next).trim()) || "";
+    if (!n) return p;
+    if (!p) return n;
+    // For price: prefer the one that matches the price regex with a currency symbol
+    const pHasSymbol = PRICE_RE.test(p) && /[$€£¥₹₩₽]|\b(?:USD|EUR|GBP|CAD|AUD|JPY|CNY)/i.test(p);
+    const nHasSymbol = PRICE_RE.test(n) && /[$€£¥₹₩₽]|\b(?:USD|EUR|GBP|CAD|AUD|JPY|CNY)/i.test(n);
+    if (pHasSymbol && !nHasSymbol) return p;
+    if (nHasSymbol && !pHasSymbol) return n;
+    // For duration: prefer the longer one (less likely truncated)
+    if (DURATION_RE.test(p) && DURATION_RE.test(n)) {
+      return n.length >= p.length ? n : p;
+    }
+    // Default: prefer non-empty next
+    return n;
   }
 
   /**
