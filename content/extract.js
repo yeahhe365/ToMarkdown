@@ -109,10 +109,13 @@
     // Prefer full title when one is a truncated prefix of the other
     const al = as.toLowerCase();
     const bl = bs.toLowerCase();
-    if (as.length >= 10 && bl.startsWith(al.slice(0, Math.min(al.length, 24)))) {
+    // Only treat as prefix match when A is >50% of B in length — prevents
+    // false merging of titles that share only a short common prefix.
+    const minPrefix = Math.max(12, Math.floor(Math.min(as.length, bs.length) * 0.55));
+    if (as.length >= 10 && bl.startsWith(al.slice(0, Math.min(al.length, minPrefix)))) {
       return bs.length >= as.length ? bs : as;
     }
-    if (bs.length >= 10 && al.startsWith(bl.slice(0, Math.min(bl.length, 24)))) {
+    if (bs.length >= 10 && al.startsWith(bl.slice(0, Math.min(bl.length, minPrefix)))) {
       return as.length >= bs.length ? as : bs;
     }
     const qa = titleQuality(as);
@@ -175,7 +178,7 @@
 
   // Currency / price (multi-locale, storefront-agnostic)
   const PRICE_RE =
-    /(?:USD|EUR|GBP|CAD|AUD|JPY|CNY|HKD|SGD|INR|€|£|¥|￥|\$|₹|₩|₽)\s?\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{1,2})?|\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{1,2})?\s?(?:USD|EUR|GBP|CAD|AUD|JPY|CNY)/i;
+    /(?:USD|EUR|GBP|CAD|AUD|JPY|CNY|HKD|SGD|INR|€|£|¥|￥|\$|₹|₩|₽)\s?\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{1,2})?|\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{1,2})?\s?(?:USD|EUR|GBP|CAD|AUD|JPY|CNY|€|£|¥|\$|₹|₩|₽)/i;
   const PRICE_STRICT_RE =
     /^(?:USD|EUR|GBP|CAD|AUD|€|£|¥|￥|\$|₹|₩|₽)\s?\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{1,2})?$/i;
   const DURATION_RE = /\b(\d{1,2}:\d{2}(?::\d{2})?)\b/;
@@ -194,7 +197,7 @@
     "\\b(?:views?|plays?|watches?|播放量?)[:\\s]+" + COUNT_TOKEN + WORD_END,
     "i"
   );
-  const PRICE_LOOKAHEAD = "(?=\\s*(?:\\$|USD|EUR|GBP|CAD|AUD|€|£|¥|￥|₹|₩|₽))";
+  const PRICE_LOOKAHEAD = "(?=\\s*(?:\\$|USD|EUR|GBP|CAD|AUD|€|£|¥|₹|₩|₽))";
 
   function extractPriceFromText(text) {
     if (!text) return "";
@@ -576,9 +579,12 @@
       const lines = items.map((li, i) => {
         const bullet = tag === "ol" ? `${i + 1}. ` : "- ";
         const indent = "  ".repeat(listDepth);
+        // Only wrap with this level's indent, not cumulative — child lists
+        // already include their own indentation via listDepth + 1.
+        const nextIndent = "  ".repeat(listDepth + 1);
         const body = childrenToMarkdown(li, listDepth + 1)
           .trim()
-          .replace(/\n+/g, "\n" + indent + "  ");
+          .replace(/\n+/g, "\n" + nextIndent);
         return `${indent}${bullet}${body}`;
       });
       return `\n\n${lines.join("\n")}\n\n`;
@@ -629,10 +635,32 @@
   }
 
   function tableToMarkdown(table) {
-    const rows = Array.from(table.querySelectorAll("tr"));
-    if (!rows.length) return "";
+    // Use :scope > to only collect direct-child rows, preventing nested table
+    // rows from leaking into the output.
+    const directRows = [
+      ...table.querySelectorAll(":scope > thead > tr, :scope > tbody > tr, :scope > tfoot > tr, :scope > tr"),
+    ];
+    if (!directRows.length) {
+      // Fallback for tables using non-standard markup
+      const allRows = Array.from(table.querySelectorAll("tr"));
+      // Filter out rows that are descendants of nested tables
+      const outerRows = allRows.filter((tr) => {
+        let p = tr.parentElement;
+        while (p && p !== table) {
+          if (p.tagName === "TABLE") return false; // inside a nested table
+          p = p.parentElement;
+        }
+        return true;
+      });
+      if (!outerRows.length) return "";
+      return buildTableMatrix(outerRows);
+    }
+    return buildTableMatrix(directRows);
+  }
+
+  function buildTableMatrix(rows) {
     const matrix = rows.map((tr) =>
-      Array.from(tr.querySelectorAll("th,td")).map((cell) =>
+      Array.from(tr.querySelectorAll(":scope > th, :scope > td")).map((cell) =>
         childrenToMarkdown(cell, 0).replace(/\n+/g, " ").trim()
       )
     );
@@ -834,7 +862,7 @@
 
     // Grid of cards with price-like text
     const cards = document.querySelectorAll(
-      'article, li, [class*="card" i], [class*="Card"], [itemtype*="Product"]'
+      'article, li, [class*="card" i], [itemtype*="Product"]'
     );
     let priced = 0;
     for (const c of cards) {
@@ -873,7 +901,7 @@
    */
   function findCardRoot(anchor) {
     const semantic = anchor.closest(
-      'article, li, [itemtype*="Product"], [itemtype*="Video"], [data-product-id], [data-item-id], [data-testid*="card" i], [class*="card" i], [class*="Card"], [class*="tile" i], [class*="Tile"], [role="listitem"]'
+      'article, li, [itemtype*="Product"], [itemtype*="Video"], [data-product-id], [data-item-id], [data-testid*="card" i], [class*="card" i], [class*="tile" i], [role="listitem"]'
     );
     let best = semantic || anchor.parentElement || anchor;
     let node = anchor.parentElement;
